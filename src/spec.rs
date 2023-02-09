@@ -9,6 +9,48 @@ use std::convert::TryInto;
 
 pub type TableName = String;
 pub type ColName = String;
+pub type UID = String;
+
+pub struct UserSpec {
+    // single identifier column
+    pub id: (TableName, ColName),
+    pub tables: Vec<TableSpec>,
+}
+
+// INSERT INTO _ (col1, col2, ..) VALUES (v1,_,_)
+pub struct TableSpec {
+    table: TableName,
+    columns: Vec<ColName>,
+    values: Vec<ValueSpec>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Link {
+    src: TableName,
+    dest: TableName,
+    src_fk: ColName,
+    dest_fk: ColName,
+}
+
+// WHERE tab.col = val
+pub struct Filter {
+    table: TableName,
+    col: ColName,
+    val: mysql::Value,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum ValueSpec {
+    ConstNum(u64),
+    ConstStr(String),
+    RandNum { lb: usize, ub: usize },
+    RandStr { len: usize },
+    RandEmail,
+    RandPhone,
+    ConstDate { year: u16, month: u8, day: u8 },
+    Bool(bool),
+    Null,
+}
 
 pub struct Spec {
     tables: Vec<TableName>,
@@ -18,11 +60,11 @@ pub struct Spec {
     fast_graph: FastGraph,
 
     // how to create fake users (which tables to insert which values)
-    user_spec: Vec<TableSpec>,
+    user_spec: UserSpec,
 }
 
 impl Spec {
-    pub fn new(tables: &Vec<TableName>, links: &Vec<Link>) -> Spec {
+    pub fn new(tables: &Vec<TableName>, links: &Vec<Link>, user_spec: UserSpec) -> Spec {
         let mut tab2ix: HashMap<TableName, usize> = HashMap::new();
         let mut link2fks: HashMap<(TableName, TableName), Link> = HashMap::new();
 
@@ -39,11 +81,11 @@ impl Spec {
         }
         input_graph.freeze();
         let fast_graph = fast_paths::prepare(&input_graph);
-        let mut path_calc = fast_paths::create_calculator(&fast_graph);
+        let path_calc = fast_paths::create_calculator(&fast_graph);
 
         Spec {
             tables: tables.clone(),
-            user_spec: vec![],
+            user_spec: user_spec,
             tab2ix: tab2ix,
             link2fks: link2fks,
             path_calculator: path_calc,
@@ -51,11 +93,15 @@ impl Spec {
         }
     }
 
-    pub fn create_user<Q: Queryable>(&self, db: &mut Q) -> mysql::Result<()> {
-        for ts in &self.user_spec {
-            ts.insert_row(db)?;
+    pub fn create_user<Q: Queryable>(&self, db: &mut Q) -> mysql::Result<UID> {
+        let mut ret = String::new();
+        for ts in &self.user_spec.tables {
+            match ts.insert_row(db, Some(&self.user_spec.id))? {
+                Some(uid) => ret = uid,
+                None => (),
+            }
         }
-        Ok(())
+        Ok(ret)
     }
 
     // TODO DFS through graph to get connection from table to target
@@ -114,56 +160,38 @@ impl Spec {
     }
 }
 
-// INSERT INTO _ (col1, col2, ..) VALUES (v1,_,_)
-pub struct TableSpec {
-    table: TableName,
-    columns: Vec<ColName>,
-    values: Vec<ValueSpec>,
-}
-
 impl TableSpec {
-    pub fn insert_row<Q: Queryable>(&self, db: &mut Q) -> mysql::Result<()> {
+    pub fn insert_row<Q: Queryable>(
+        &self,
+        db: &mut Q,
+        return_id: Option<&(TableName, ColName)>,
+    ) -> mysql::Result<Option<UID>> {
         let values: Vec<String> = self
             .values
             .iter()
             .map(|v| valuespec2value(v).as_sql(false))
             .collect();
+
+        let mut ret = None;
+        if let Some((tab, col)) = return_id {
+            if &self.table == tab {
+                for (i, c) in self.columns.iter().enumerate() {
+                    if c == col {
+                        ret = Some(values[i].clone());
+                        break;
+                    }
+                }
+            }
+        }
         let q = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             self.table,
             self.columns.join(","),
             values.join(",")
         );
-        db.query_drop(q)
+        db.query_drop(q)?;
+        Ok(ret)
     }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Link {
-    src: TableName,
-    dest: TableName,
-    src_fk: ColName,
-    dest_fk: ColName,
-}
-
-// WHERE tab.col = val
-pub struct Filter {
-    table: TableName,
-    col: ColName,
-    val: mysql::Value,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub enum ValueSpec {
-    ConstNum(u64),
-    ConstStr(String),
-    RandNum { lb: usize, ub: usize },
-    RandStr { len: usize },
-    RandEmail,
-    RandPhone,
-    ConstDate { year: u16, month: u8, day: u8 },
-    Bool(bool),
-    Null,
 }
 
 pub fn valuespec2value(vs: &ValueSpec) -> mysql::Value {
