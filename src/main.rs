@@ -1,7 +1,7 @@
 extern crate log;
 extern crate mysql;
 extern crate rand;
-use hydra::HydraClient;
+use hydra::Hydra;
 
 fn init_logger() {
     let _ = env_logger::builder()
@@ -17,4 +17,5 @@ fn init_logger() {
 fn main() {
     init_logger();
     let dbname = "pseudotester";
+    let hydra = Hydra::new("root", "pass", "127.0.0.1", dbname, false);
 }

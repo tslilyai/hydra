@@ -11,19 +11,27 @@ pub type TableName = String;
 pub type ColName = String;
 pub type UID = String;
 
-pub struct UserSpec {
-    // single identifier column
+/*
+ * How to generate new object types
+ * + How to identify the object (restricted to a single ID col)
+ */
+pub struct ObjectSpec {
     pub id: (TableName, ColName),
     pub tables: Vec<TableSpec>,
 }
 
-// INSERT INTO _ (col1, col2, ..) VALUES (v1,_,_)
+/*
+ * How to generate new rows for a particular table
+ */
 pub struct TableSpec {
     table: TableName,
     columns: Vec<ColName>,
     values: Vec<ValueSpec>,
 }
 
+/*
+ * How table rows are linked together
+ */
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Link {
     src: TableName,
@@ -32,13 +40,18 @@ pub struct Link {
     dest_fk: ColName,
 }
 
-// WHERE tab.col = val
+/*
+ * WHERE clause
+ */
 pub struct Filter {
     table: TableName,
     col: ColName,
     val: mysql::Value,
 }
 
+/*
+ * How to generate new values
+ */
 #[derive(Clone, Serialize, Deserialize)]
 pub enum ValueSpec {
     ConstNum(u64),
@@ -52,19 +65,25 @@ pub enum ValueSpec {
     Null,
 }
 
+/*
+ * General spec, including
+ * - how to generate users,
+ * - what tables and table links exist,
+ * - metadata to calculate paths between table nodes.
+ */
 pub struct Spec {
-    tables: Vec<TableName>,
+    pub user_spec: ObjectSpec,
+    pub tables: Vec<TableName>,
+    pub link2fks: HashMap<(TableName, TableName), Link>,
+
+    // extra things to calculate paths between table nodes
     tab2ix: HashMap<TableName, usize>,
-    link2fks: HashMap<(TableName, TableName), Link>,
     path_calculator: PathCalculator,
     fast_graph: FastGraph,
-
-    // how to create fake users (which tables to insert which values)
-    user_spec: UserSpec,
 }
 
 impl Spec {
-    pub fn new(tables: &Vec<TableName>, links: &Vec<Link>, user_spec: UserSpec) -> Spec {
+    pub fn new(tables: &Vec<TableName>, links: &Vec<Link>, user_spec: ObjectSpec) -> Spec {
         let mut tab2ix: HashMap<TableName, usize> = HashMap::new();
         let mut link2fks: HashMap<(TableName, TableName), Link> = HashMap::new();
 
@@ -104,8 +123,9 @@ impl Spec {
         Ok(ret)
     }
 
-    // TODO DFS through graph to get connection from table to target
-    pub fn query_with_filters(&mut self, target: &TableName, filters: &Vec<Filter>) -> String {
+    // form a SELECT query given particular filters, that may not be filters on the target table itself
+    // e.g., SELECT * FROM stories JOIN taggings ON ... JOIN tags ON ... WHERE tags.tagging = 'xx'
+    pub fn select_with_filters(&mut self, target: &TableName, filters: &Vec<Filter>) -> String {
         let mut joinstr: Vec<String> = vec![];
         let mut filterstr: Vec<String> = vec![];
         let mut joined = HashSet::new();
