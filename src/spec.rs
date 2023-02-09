@@ -1,32 +1,83 @@
+use mysql::prelude::*;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryInto;
 
-pub struct OwnershipSpec {
+pub type TableName = String;
+pub type ColName = String;
+
+pub struct Spec {
     // how to create fake users (which tables to insert which values)
-    user_spec: Vec<TableSpec>,
-    // src table => link type to users
-    data_links: HashMap<String, Link>,
+    pub user_spec: Vec<TableSpec>,
+    // src => dest links
+    pub forward_links: HashMap<String, Link>,
+    // dest => src links
+    pub backward_links: HashMap<String, Link>,
 }
 
+impl Spec {
+    pub fn new() -> Spec {
+        Spec {
+            user_spec: vec![],
+            forward_links: HashMap::new(),
+            backward_links: HashMap::new(),
+        }
+    }
+
+    pub fn create_user<Q: Queryable>(&self, db: &mut Q) -> mysql::Result<()> {
+        for ts in &self.user_spec {
+            ts.insert_row(db)?;
+        }
+        Ok(())
+    }
+
+    // TODO DFS through graph to get connection from table to target
+    pub fn query_linked(&self, target: TableName, src: TableName) -> String {
+        let mut joins = String::new();
+        match self.forward_links.get(&src) {
+            Some(link) => joins.push_str(&format!(
+                " {} ON {}.{} = {}.{}",
+                link.src, link.src, link.src_fk, link.dest, link.dest_fk
+            )),
+            None => unimplemented!("Searching for path that doesn't exist?"),
+        }
+        let q = format!("SELECT * FROM {} JOIN {}", target, joins);
+        q
+    }
+}
+
+// INSERT INTO _ (col1, col2, ..) VALUES (v1,_,_)
 pub struct TableSpec {
-    // INSERT INTO _ (col1, col2, ..) VALUES (v1,_,_)
-    table_name: String,
-    columns: Vec<String>,
+    table_name: TableName,
+    columns: Vec<ColName>,
     values: Vec<ValueSpec>,
 }
 
-pub struct Link {
-    src: String,
-    dest: String,
-    fk: String,
+impl TableSpec {
+    pub fn insert_row<Q: Queryable>(&self, db: &mut Q) -> mysql::Result<()> {
+        let values: Vec<String> = self
+            .values
+            .iter()
+            .map(|v| valuespec2value(v).as_sql(false))
+            .collect();
+        let q = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            self.table_name,
+            self.columns.join(","),
+            values.join(",")
+        );
+        db.query_drop(q)
+    }
 }
 
-pub enum LinkType {
-    Direct(Link),
-    Indirect(Vec<Link>),
+// src.src_fk => dest.dest_fk
+pub struct Link {
+    src: TableName,
+    dest: TableName,
+    src_fk: ColName,
+    dest_fk: ColName,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
