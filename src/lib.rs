@@ -4,6 +4,7 @@ use spec::*;
 
 pub mod auth;
 pub mod crypto;
+pub mod helpers;
 pub mod spec;
 
 pub struct Hydra {

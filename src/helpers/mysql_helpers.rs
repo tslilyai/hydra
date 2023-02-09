@@ -1,48 +1,11 @@
-use crate::RowVal;
-use crate::*;
 use log::{debug, warn};
+use mysql::prelude::*;
 use mysql::Opts;
+use std::io;
 use std::str::FromStr;
 
 pub const NULLSTR: &'static str = "NULL";
 
-pub fn write_mysql_answer_rows<W: io::Write>(
-    results: msql_srv::QueryResultWriter<W>,
-    rows: mysql::Result<mysql::QueryResult<mysql::Text>>,
-) -> Result<(), mysql::Error> {
-    match rows {
-        Ok(rows) => {
-            let cols: Vec<_> = rows
-                .columns()
-                .as_ref()
-                .into_iter()
-                .map(|c| msql_srv::Column {
-                    table: c.table_str().to_string(),
-                    column: c.name_str().to_string(),
-                    coltype: get_msql_srv_coltype(&c.column_type()),
-                    colflags: msql_srv::ColumnFlags::from_bits(c.flags().bits()).unwrap(),
-                })
-                .collect();
-            let mut writer = results.start(&cols)?;
-            for row in rows {
-                let vals = row.unwrap().unwrap();
-                for v in vals {
-                    writer.write_col(mysql_val_to_common_val(&v))?;
-                }
-                writer.end_row()?;
-            }
-            writer.finish()?;
-        }
-        Err(e) => {
-            warn!("{:?}", e);
-            results.error(
-                msql_srv::ErrorKind::ER_BAD_SLAVE,
-                format!("{:?}", e).as_bytes(),
-            )?;
-        }
-    }
-    Ok(())
-}
 pub fn get_msql_srv_coltype(t: &mysql::consts::ColumnType) -> msql_srv::ColumnType {
     use msql_srv::ColumnType;
     match t {
@@ -105,40 +68,10 @@ pub fn str_select_statement(table: &str, from: &str, selection: &str) -> String 
     s
 }
 
-pub fn get_select_of_ids_str(tinfo: &TableInfo, ids: &Vec<String>) -> String {
-    let cols = &tinfo.id_cols;
-    let mut parts = vec!["true".to_string()];
-    for (i, id) in ids.iter().enumerate() {
-        if is_string_numeric(id) || id == "true" || id == "false" {
-            parts.push(format!("{} = {}", cols[i], id))
-        } else {
-            parts.push(format!("{} = '{}'", cols[i], id))
-        }
-    }
-    parts.join(" AND ")
-}
-
-pub fn get_select_of_ids(ids: &Vec<RowVal>) -> String {
-    let mut parts = vec!["true".to_string()];
-    for id in ids {
-        if is_string_numeric(&id.value()) || id.value() == "true" || id.value() == "false" {
-            parts.push(format!("{} = {}", id.column(), id.value()))
-        } else {
-            parts.push(format!("{} = '{}'", id.column(), id.value()))
-        }
-    }
-    parts.join(" AND ")
-}
-
-pub fn get_select_of_row(id_cols: &Vec<String>, row: &Vec<RowVal>) -> String {
-    let ids = helpers::get_ids(id_cols, row);
-    get_select_of_ids(&ids)
-}
-
 /************************************
  * INITIALIZATION HELPERS
  * **********************************/
-fn create_schema(db: &mut mysql::Conn, in_memory: bool, schema: &str) -> Result<(), mysql::Error> {
+fn create_schema(db: &mut mysql::Conn, in_memory: bool, schema: &str) -> mysql::Result<()> {
     db.query_drop("SET max_heap_table_size = 4294967295;")?;
 
     /* issue schema statements */
@@ -159,9 +92,9 @@ fn create_schema(db: &mut mysql::Conn, in_memory: bool, schema: &str) -> Result<
             // ignore query statements in schema
             if stmt.to_lowercase().contains("create") {
                 if stmt.to_lowercase().contains("table") {
-                    let new_stmt = helpers::process_schema_stmt(&stmt, in_memory);
-                    warn!("create_schema issuing new_stmt {}", new_stmt);
-                    db.query_drop(new_stmt.to_string())?;
+                    //let stmt = helpers::process_schema_stmt(&stmt, in_memory);
+                    warn!("create_schema issuing stmt {}", stmt);
+                    db.query_drop(stmt.to_string())?;
                 } else {
                     db.query_drop(stmt.to_string())?;
                 }
@@ -189,146 +122,14 @@ pub fn init_db(in_memory: bool, user: &str, pass: &str, host: &str, dbname: &str
 /************************************
  * MYSQL HELPERS
  ************************************/
-pub fn query_drop(q: String, conn: &mut mysql::PooledConn) -> Result<(), mysql::Error> {
+pub fn query_drop(q: String, conn: &mut mysql::PooledConn) -> mysql::Result<()> {
     warn!("query_drop: {}\n", q);
     conn.query_drop(q)
 }
 
-pub fn query_drop_txn(q: String, txn: &mut mysql::Transaction) -> Result<(), mysql::Error> {
+pub fn query_drop_txn(q: String, txn: &mut mysql::Transaction) -> mysql::Result<()> {
     warn!("query_drop: {}\n", q);
     txn.query_drop(q)
-}
-
-pub fn get_query_rows_str_txn(
-    qstr: &str,
-    txn: &mut mysql::Transaction,
-) -> Result<Vec<Vec<RowVal>>, mysql::Error> {
-    warn!("get_query_rows: {}\n", qstr);
-
-    let mut rows = vec![];
-    let res = txn.query_iter(qstr)?;
-    let cols: Vec<String> = res
-        .columns()
-        .as_ref()
-        .iter()
-        .map(|c| c.name_str().to_string())
-        .collect();
-
-    for row in res {
-        let rowvals = row.unwrap().unwrap();
-        let mut i = 0;
-        let vals: Vec<RowVal> = rowvals
-            .iter()
-            .map(|v| {
-                let index = i;
-                i += 1;
-                RowVal::new(cols[index].clone(), mysql_val_to_string(v))
-            })
-            .collect();
-        rows.push(vals);
-    }
-    Ok(rows)
-}
-
-pub fn get_query_rows_str(
-    qstr: &str,
-    conn: &mut mysql::PooledConn,
-) -> Result<Vec<Vec<RowVal>>, mysql::Error> {
-    warn!("get_query_rows: {}\n", qstr);
-
-    let mut rows = vec![];
-    let res = conn.query_iter(qstr)?;
-    let cols: Vec<String> = res
-        .columns()
-        .as_ref()
-        .iter()
-        .map(|c| c.name_str().to_string())
-        .collect();
-
-    for row in res {
-        let rowvals = row.unwrap().unwrap();
-        let mut i = 0;
-        let vals: Vec<RowVal> = rowvals
-            .iter()
-            .map(|v| {
-                let index = i;
-                i += 1;
-                RowVal::new(cols[index].clone(), mysql_val_to_string(v))
-            })
-            .collect();
-        rows.push(vals);
-    }
-    Ok(rows)
-}
-
-pub fn get_query_rows_str_q<Q: Queryable>(
-    q: &str,
-    conn: &mut Q,
-) -> Result<Vec<Vec<RowVal>>, mysql::Error> {
-    let start = time::Instant::now();
-    let mut rows = vec![];
-    let res = conn.query_iter(q)?;
-    let cols: Vec<String> = res
-        .columns()
-        .as_ref()
-        .iter()
-        .map(|c| c.name_str().to_string())
-        .collect();
-
-    for row in res {
-        let rowvals = row.unwrap().unwrap();
-        let mut i = 0;
-        let vals: Vec<RowVal> = rowvals
-            .iter()
-            .map(|v| {
-                let index = i;
-                i += 1;
-                RowVal::new(cols[index].clone(), mysql_val_to_string(v))
-            })
-            .collect();
-        rows.push(vals);
-    }
-    warn!("{}: {}mus", q, start.elapsed().as_micros());
-    Ok(rows)
-}
-
-pub fn get_query_rows(
-    q: &Statement,
-    conn: &mut mysql::PooledConn,
-) -> Result<Vec<Vec<RowVal>>, mysql::Error> {
-    let qstr = q.to_string();
-    get_query_rows_str(&qstr, conn)
-}
-
-pub fn get_query_rows_prime(
-    q: &Statement,
-    db: &mut mysql::PooledConn,
-) -> Result<Vec<Vec<RowVal>>, mysql::Error> {
-    let mut rows = vec![];
-
-    warn!("get_query_rows_prime: {}", q);
-    let res = db.query_iter(q.to_string())?;
-    let cols: Vec<String> = res
-        .columns()
-        .as_ref()
-        .iter()
-        .map(|c| c.name_str().to_string())
-        .collect();
-
-    for row in res {
-        let rowvals = row.unwrap().unwrap();
-        let mut i = 0;
-        let vals: Vec<RowVal> = rowvals
-            .iter()
-            .map(|v| {
-                let index = i;
-                i += 1;
-                RowVal::new(cols[index].clone(), mysql_val_to_string(v))
-            })
-            .collect();
-        rows.push(vals);
-    }
-    Ok(rows)
 }
 
 pub fn escape_quotes_mysql(s: &str) -> String {
@@ -368,7 +169,7 @@ pub fn mysql_val_to_string(val: &mysql::Value) -> String {
     match val {
         mysql::Value::NULL => "NULL".to_string(),
         mysql::Value::Bytes(bs) => {
-            let res = str::from_utf8(&bs);
+            let res = std::str::from_utf8(&bs);
             match res {
                 Err(_) => String::new(),
                 Ok(s) => remove_escaped_chars(s),
@@ -382,10 +183,10 @@ pub fn mysql_val_to_string(val: &mysql::Value) -> String {
     }
 }
 
-pub fn mysql_val_to_u64(val: &mysql::Value) -> Result<u64, mysql::Error> {
+pub fn mysql_val_to_u64(val: &mysql::Value) -> mysql::Result<u64> {
     match val {
         mysql::Value::Bytes(bs) => {
-            let res = str::from_utf8(&bs).unwrap();
+            let res = std::str::from_utf8(&bs).unwrap();
             Ok(u64::from_str(res).unwrap())
         }
         mysql::Value::Int(i) => Ok(u64::from_str(&i.to_string()).unwrap()), // TODO fix?

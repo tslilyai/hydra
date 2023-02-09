@@ -142,12 +142,13 @@ impl Spec {
                         .calc_path(&self.fast_graph, *srcix, *destix);
                     match path {
                         Some(p) => {
-                            let nodes = p.get_nodes();
+                            let mut nodes = p.get_nodes().clone();
+                            nodes.reverse();
                             for (i, n) in nodes.iter().enumerate() {
-                                // stop at the target
+                                // first node is the target, last node is the dest
                                 if i < nodes.len() - 1 {
-                                    let src = self.tables[*n].clone();
-                                    let dest = self.tables[nodes[i + 1]].clone();
+                                    let dest = self.tables[*n].clone();
+                                    let src = self.tables[nodes[i + 1]].clone();
                                     let link = self.link2fks.get(&(src.clone(), dest)).unwrap();
                                     if joined.get(&src).is_none() {
                                         joinstr.push(format!(
@@ -169,10 +170,14 @@ impl Spec {
             }
         }
 
+        let joinconjunct = if joinstr.is_empty() { " " } else { " JOIN " };
+        let filterconjunct = if filterstr.is_empty() { " " } else { " WHERE " };
         let q = format!(
-            "SELECT * FROM {} {} {}",
+            "SELECT * FROM {}{}{}{}{}",
             target,
+            joinconjunct,
             joinstr.join(" JOIN "),
+            filterconjunct,
             filterstr.join(" AND ")
         );
         info!("query with filters: {}", q);
@@ -261,4 +266,47 @@ pub fn valuespec2value(vs: &ValueSpec) -> mysql::Value {
         ConstDate { year, month, day } => Date(*year, *month, *day, 0, 0, 0, 0),
         Null => NULL,
     }
+}
+
+// tests
+
+#[test]
+fn test_query_joined() {
+    //new(tables: &Vec<TableName>, links: &Vec<Link>, user_spec: ObjectSpec) -> Spec {
+    let mut spec = Spec::new(
+        &vec![
+            "target".to_string(),
+            "intermediate".to_string(),
+            "start".to_string(),
+        ],
+        &vec![
+            Link {
+                src: "intermediate".to_string(),
+                dest: "target".to_string(),
+                src_fk: "int_fk".to_string(),
+                dest_fk: "target_fk".to_string(),
+            },
+            Link {
+                src: "start".to_string(),
+                dest: "intermediate".to_string(),
+                src_fk: "start_fk".to_string(),
+                dest_fk: "int_fk".to_string(),
+            },
+        ],
+        ObjectSpec {
+            tables: vec![],
+            id: ("target".to_string(), "target_fk".to_string()),
+        },
+    );
+    assert_eq!(
+        spec.select_with_filters(
+            &"target".to_string(),
+            &vec![Filter {
+                table: "start".to_string(),
+                col: "col".to_string(),
+                val: mysql::Value::Int(1),
+            }], /*filters: &Vec<Filter>*/
+        ),
+        "SELECT * FROM target JOIN intermediate ON intermediate.int_fk = target.target_fk JOIN start ON start.start_fk = intermediate.int_fk WHERE start.col = 1"
+    );
 }
