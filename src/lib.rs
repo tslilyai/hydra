@@ -21,7 +21,7 @@ impl HydraClient {
         let pool = mysql::Pool::new(Opts::from_url(&url).unwrap()).unwrap();
         HydraClient {
             pool: pool.clone(),
-            spec: spec::Spec::new(),
+            spec: spec::Spec::new(&vec![], &vec![]),
         }
     }
 
@@ -30,7 +30,7 @@ impl HydraClient {
         self.spec.create_user(&mut db)
     }
 
-    pub fn reassign_data(data_id: DataID, src_usr: UID, dest_usr: UID) {
-        //
-    }
+    //pub fn reassign_data(data_id: DataID, src_usr: UID, dest_usr: UID) {
+    //
+    //}
 }
